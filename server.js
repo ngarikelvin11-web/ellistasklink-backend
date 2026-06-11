@@ -214,7 +214,7 @@ app.get("/api/test-payment", async (req, res) => {
     const response = await axios.post(
       "https://pay.pesapal.com/v3/api/Transactions/SubmitOrderRequest",
       {
-        id: Date.now().toString(),
+      id: "ngarikelvin11@gmail.com",
         currency: "KES",
         amount: 100,
         description: "EllisTaskLink Membership",
