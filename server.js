@@ -214,7 +214,7 @@ app.get("/api/test-payment", async (req, res) => {
     const response = await axios.post(
       "https://pay.pesapal.com/v3/api/Transactions/SubmitOrderRequest",
       {
-      id: "ngarikelvin11@gmail.com",
+      id: "kelvin-ngari-001",
         currency: "KES",
         amount: 100,
         description: "EllisTaskLink Membership",
@@ -272,14 +272,14 @@ app.get("/api/payment-callback", async (req, res) => {
 
     if (paymentData.payment_status_description === "Completed") {
 
-     const email = paymentData.merchant_reference;
+     const reference = paymentData.merchant_reference;
 
       await supabase
         .from("users")
         .update({
           membership_paid: true
         })
-        .eq("email", email);
+       .eq("referral_code", "KELVINNGARI353");
 
       await supabase
         .from("payments")
