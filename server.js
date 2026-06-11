@@ -1,9 +1,9 @@
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
-import fs from "fs";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
+import supabase from "./supabase.js";
 
 dotenv.config();
 
@@ -15,76 +15,109 @@ app.use(express.json());
 const PORT = 5000;
 
 app.get("/", (req, res) => {
-res.json({
-message: "EllisTaskLink Backend Running"
-});
+  res.json({
+    message: "EllisTaskLink Backend Running"
+  });
 });
 
 app.post("/api/register", async (req, res) => {
-const { fullName, email, password } = req.body;
+  try {
+    const { fullName, email, password } = req.body;
 
-const users = JSON.parse(fs.readFileSync("users.json"));
+    const { data: existingUser } = await supabase
+      .from("users")
+      .select("*")
+      .eq("email", email)
+      .maybeSingle();
 
-const existingUser = users.find(user => user.email === email);
+    if (existingUser) {
+      return res.json({
+        message: "User already exists"
+      });
+    }
 
-if (existingUser) {
-return res.json({
-message: "User already exists"
-});
-}
+    const hashedPassword = await bcrypt.hash(password, 10);
 
-const hashedPassword = await bcrypt.hash(password, 10);
+    const referralCode =
+      fullName.replace(/\s+/g, "").toUpperCase() +
+      Math.floor(Math.random() * 1000);
 
-const newUser = {
-id: Date.now(),
-fullName,
-email,
-password: hashedPassword,
-membershipPaid: false,
-balance: 0
-};
+    const { error } = await supabase
+      .from("users")
+      .insert([
+        {
+          full_name: fullName,
+          email: email,
+          password: hashedPassword,
+          referral_code: referralCode
+        }
+      ]);
 
-users.push(newUser);
+    if (error) {
+      return res.json({
+        message: error.message
+      });
+    }
 
-fs.writeFileSync("users.json", JSON.stringify(users, null, 2));
+    return res.json({
+      message: "Account created successfully"
+    });
 
-res.json({
-message: "Account created successfully"
-});
+  } catch (error) {
+    console.log(error);
+
+    return res.json({
+      message: error.message
+    });
+  }
 });
 
 app.post("/api/login", async (req, res) => {
-const { email, password } = req.body;
+  try {
+    const { email, password } = req.body;
 
-const users = JSON.parse(fs.readFileSync("users.json"));
+    const { data: user } = await supabase
+      .from("users")
+      .select("*")
+      .eq("email", email)
+      .maybeSingle();
 
-const user = users.find(user => user.email === email);
+    if (!user) {
+      return res.json({
+        message: "User not found"
+      });
+    }
 
-if (!user) {
-return res.json({
-message: "User not found"
-});
-}
+    const validPassword = await bcrypt.compare(
+      password,
+      user.password
+    );
 
-const validPassword = await bcrypt.compare(password, user.password);
+    if (!validPassword) {
+      return res.json({
+        message: "Invalid password"
+      });
+    }
 
-if (!validPassword) {
-return res.json({
-message: "Invalid password"
-});
-}
+    const token = jwt.sign(
+      { id: user.id },
+      process.env.JWT_SECRET
+    );
 
-const token = jwt.sign(
-{ id: user.id },
-process.env.JWT_SECRET
-);
+    return res.json({
+      token: token,
+      user: user
+    });
 
-res.json({
-token,
-user
-});
+  } catch (error) {
+    console.log(error);
+
+    return res.json({
+      message: error.message
+    });
+  }
 });
 
 app.listen(PORT, () => {
-console.log(`Server running on port ${PORT}`);
+  console.log("Server running on port " + PORT);
 });
