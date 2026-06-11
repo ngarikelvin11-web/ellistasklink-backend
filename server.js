@@ -140,7 +140,7 @@ app.post("/api/create-payment", async (req, res) => {
       {
         id: req.body.email,
         currency: "KES",
-        amount: 100,
+        amount: 1,
         description: "EllisTaskLink Membership",
         callback_url: "https://ellistasks.co.ke/payment-success",
         notification_id: "5d8ac0ab-eb81-4e08-80d5-da468a29cd6a",
