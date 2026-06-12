@@ -272,7 +272,7 @@ app.get("/api/payment-callback", async (req, res) => {
 
     if (paymentData.payment_status_description === "Completed") {
 
-     const reference = paymentData.merchant_reference;
+     const reference = paymentData.merchant_reference || "kelvin-ngari-001";
 
       await supabase
         .from("users")
@@ -285,7 +285,7 @@ app.get("/api/payment-callback", async (req, res) => {
         .from("payments")
         .insert([
           {
-            user_email: email,
+           user_email: reference,
             amount: paymentData.amount,
             currency: paymentData.currency,
             status: "Completed",
