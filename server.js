@@ -1,315 +1,107 @@
-import axios from "axios";
-import { getPesapalToken } from "./pesapal.js";
-import express from "express";
-import cors from "cors";
 import dotenv from "dotenv";
-import bcrypt from "bcryptjs";
-import jwt from "jsonwebtoken";
-import supabase from "./supabase.js";
-
 dotenv.config();
 
-const app = express();
+import express from "express";
+import cors from "cors";
 
+// ─── ROUTE IMPORTS ───────────────────────────────────────────────────────────
+import authRoutes      from "./routes/auth.js";
+import paymentRoutes   from "./routes/payments.js";
+import taskRoutes      from "./routes/tasks.js";
+import userRoutes      from "./routes/user.js";
+import walletRoutes    from "./routes/wallets.js";
+import referralRoutes  from "./routes/referrals.js";
+import withdrawalRoutes from "./routes/withdrawals.js";
+import adminRoutes     from "./routes/admin.js";
+
+// ─── APP SETUP ───────────────────────────────────────────────────────────────
+const app  = express();
+const PORT = process.env.PORT || 5000;
+
+console.log("✅ Server file loaded");
+
+// ─── MIDDLEWARE ──────────────────────────────────────────────────────────────
 app.use(cors());
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
-const PORT = 5000;
-
-app.get("/api/pesapal-token", async (req, res) => {
-
-  const token = await getPesapalToken();
-
-  res.json({
-    token
-  });
-
-});
+// ─── HEALTH CHECK ────────────────────────────────────────────────────────────
 app.get("/", (req, res) => {
-  res.json({
-    message: "EllisTaskLink Backend Running"
+  return res.status(200).json({
+    message: "EllisTaskLink Backend Running",
+    version: "5.0.0",
+    status:  "healthy",
+    routes: {
+      auth:        "/api/auth/register  |  /api/auth/login  |  /api/auth/me",
+      tasks:       "/api/tasks  |  /api/tasks/start  |  /api/tasks/complete  |  /api/tasks/user/:email",
+      wallet:      "/api/user/wallet/:email",
+      referrals:   "/api/user/referrals/:email  |  /api/user/track",
+      withdrawals: "/api/withdrawals/request  |  /api/withdrawals/:email",
+      payments:    "/api/payments/create  |  /api/payments/token  |  /api/payments/callback",
+      admin:       "/api/admin/stats  |  /api/admin/users  |  /api/admin/withdrawals",
+    },
   });
 });
 
-app.post("/api/register", async (req, res) => {
-  try {
-    const { fullName, email, password } = req.body;
+// ─── API ROUTES ──────────────────────────────────────────────────────────────
+//
+//  Mount point          File             Final URLs produced
+//  -------------------  ---------------  ------------------------------------------
+//  /api/auth            auth.js          /api/auth/register, /api/auth/login, /api/auth/me
+//  /api/payments        payments.js      /api/payments/create, /api/payments/token …
+//  /api/tasks           tasks.js         /api/tasks, /api/tasks/start, /api/tasks/complete, /api/tasks/user/:email
+//  /api/user            user.js          /api/user/profile/:email, /api/user/test
+//  /api/user            wallets.js       /api/user/wallet/:email
+//  /api/user            referrals.js     /api/user/referrals/:email, /api/user/track
+//  /api/withdrawals     withdrawals.js   /api/withdrawals/request, /api/withdrawals/:email
+//  /api/admin           admin.js         /api/admin/stats, /api/admin/users …
 
-    const { data: existingUser } = await supabase
-      .from("users")
-      .select("*")
-      .eq("email", email)
-      .maybeSingle();
+app.use("/api/auth",        authRoutes);
+app.use("/api/payments",    paymentRoutes);
+app.use("/api/tasks",       taskRoutes);
+app.use("/api/user",        userRoutes);
+app.use("/api/user",        walletRoutes);
+app.use("/api/user",        referralRoutes);
+app.use("/api/withdrawals", withdrawalRoutes);
+app.use("/api/admin",       adminRoutes);
 
-    if (existingUser) {
-      return res.json({
-        message: "User already exists"
-      });
-    }
-
-    const hashedPassword = await bcrypt.hash(password, 10);
-
-    const referralCode =
-      fullName.replace(/\s+/g, "").toUpperCase() +
-      Math.floor(Math.random() * 1000);
-
-    const { error } = await supabase
-      .from("users")
-      .insert([
-        {
-          full_name: fullName,
-          email: email,
-          password: hashedPassword,
-          referral_code: referralCode
-        }
-      ]);
-
-    if (error) {
-      return res.json({
-        message: error.message
-      });
-    }
-
-    return res.json({
-      message: "Account created successfully"
-    });
-
-  } catch (error) {
-    console.log(error);
-
-    return res.json({
-      message: error.message
-    });
-  }
+// ─── 404 HANDLER ─────────────────────────────────────────────────────────────
+app.use((req, res) => {
+  return res.status(404).json({
+    message: "Route not found",
+    path:    req.originalUrl,
+  });
 });
 
-app.post("/api/login", async (req, res) => {
-  try {
-    const { email, password } = req.body;
-
-    const { data: user } = await supabase
-      .from("users")
-      .select("*")
-      .eq("email", email)
-      .maybeSingle();
-
-    if (!user) {
-      return res.json({
-        message: "User not found"
-      });
-    }
-
-    const validPassword = await bcrypt.compare(
-      password,
-      user.password
-    );
-
-    if (!validPassword) {
-      return res.json({
-        message: "Invalid password"
-      });
-    }
-
-    const token = jwt.sign(
-      { id: user.id },
-      process.env.JWT_SECRET
-    );
-
-    return res.json({
-      token: token,
-      user: user
-    });
-
-  } catch (error) {
-    console.log(error);
-
-    return res.json({
-      message: error.message
-    });
-  }
+// ─── GLOBAL ERROR HANDLER ────────────────────────────────────────────────────
+app.use((err, req, res, next) => {
+  console.error("❌ Unhandled error:", err);
+  return res.status(500).json({ message: "Internal server error", error: err.message });
 });
 
-app.post("/api/create-payment", async (req, res) => {
-
-  try {
-
-    const token = await getPesapalToken();
-
-    const response = await axios.post(
-      "https://pay.pesapal.com/v3/api/Transactions/SubmitOrderRequest",
-      {
-        id: req.body.email,
-        currency: "KES",
-        amount: 1,
-        description: "EllisTaskLink Membership",
-        callback_url: "https://ellistasks.co.ke/payment-success",
-        notification_id: "5d8ac0ab-eb81-4e08-80d5-da468a29cd6a",
-        billing_address: {
-          email_address: req.body.email,
-          phone_number: "0712345678",
-          country_code: "KE",
-          first_name: req.body.fullName
-        }
-      },
-      {
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "Content-Type": "application/json"
-        }
-      }
-    );
-
-    res.json(response.data);
-
-  } catch (error) {
-
-    console.log(error.response?.data || error.message);
-
-    res.json({
-      message: "Payment creation failed"
-    });
-
-  }
-
-});
-app.get("/api/register-ipn", async (req, res) => {
-
-  try {
-
-    const token = await getPesapalToken();
-
-    const response = await axios.post(
-      "https://pay.pesapal.com/v3/api/URLSetup/RegisterIPN",
-      {
-        url: "https://ellistasklink-backend.onrender.com/api/payment-callback",
-        ipn_notification_type: "GET"
-      },
-      {
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "Content-Type": "application/json"
-        }
-      }
-    );
-
-    res.json(response.data);
-
-  } catch (error) {
-
-    console.log(error.response?.data || error.message);
-
-    res.json({
-      message: "IPN registration failed"
-    });
-
-  }
-
-});
-app.get("/api/test-payment", async (req, res) => {
-
-  try {
-
-    const token = await getPesapalToken();
-
-    const response = await axios.post(
-      "https://pay.pesapal.com/v3/api/Transactions/SubmitOrderRequest",
-      {
-      id: "kelvin-ngari-001",
-        currency: "KES",
-        amount: 1,
-        description: "EllisTaskLink Membership",
-        callback_url: "https://ellistasks.co.ke/payment-success",
-        notification_id: "5d8ac0ab-eb81-4e08-80d5-da468a29cd6a",
-        billing_address: {
-          email_address: "ngarikelvin11@gmail.com",
-          phone_number: "0712345678",
-          country_code: "KE",
-          first_name: "Kelvin"
-        }
-      },
-      {
-        headers: {
-          Authorization: "Bearer " + token,
-          "Content-Type": "application/json"
-        }
-      }
-    );
-
-    res.json(response.data);
-
-  } catch (error) {
-
-    console.log(error.response?.data || error.message);
-
-    res.json({
-      message: "Payment creation failed"
-    });
-
-  }
-
-});
-app.get("/api/payment-callback", async (req, res) => {
-
-  try {
-
-    const orderTrackingId = req.query.OrderTrackingId;
-
-    const token = await getPesapalToken();
-
-    const response = await axios.get(
-      `https://pay.pesapal.com/v3/api/Transactions/GetTransactionStatus?orderTrackingId=${orderTrackingId}`,
-      {
-        headers: {
-          Authorization: "Bearer " + token,
-          "Content-Type": "application/json"
-        }
-      }
-    );
-
-    const paymentData = response.data;
-
-    console.log(paymentData);
-
-    if (paymentData.payment_status_description === "Completed") {
-
-     const reference = paymentData.merchant_reference || "kelvin-ngari-001";
-
-      await supabase
-        .from("users")
-        .update({
-          membership_paid: true
-        })
-       .eq("referral_code", "KELVINNGARI353");
-
-      await supabase
-        .from("payments")
-        .insert([
-          {
-           user_email: reference,
-            amount: paymentData.amount,
-            currency: paymentData.currency,
-            status: "Completed",
-            pesapal_tracking_id: orderTrackingId
-          }
-        ]);
-
-    }
-
-    res.json({
-      message: "Callback received successfully"
-    });
-
-  } catch (error) {
-
-    console.log(error.response?.data || error.message);
-
-    res.json({
-      message: "Payment callback failed"
-    });
-
-  }
-
-});
+// ─── START SERVER ─────────────────────────────────────────────────────────────
 app.listen(PORT, () => {
-  console.log("Server running on port " + PORT);
+  const envVars = [
+    process.env.JWT_SECRET,
+    process.env.SUPABASE_URL,
+    process.env.SUPABASE_KEY,
+    process.env.PESAPAL_CONSUMER_KEY,
+    process.env.PESAPAL_CONSUMER_SECRET,
+    process.env.PESAPAL_IPN_ID,
+    process.env.PESAPAL_CALLBACK_URL,
+  ];
+  const loadedCount = envVars.filter(Boolean).length;
+
+  console.log(`◇ injected env (${loadedCount}) from .env`);
+  console.log(`🚀 EllisTaskLink server running on port ${PORT}`);
+  console.log("──────────────────────────────────────");
+  console.log("version:                 5.0.0");
+  console.log("JWT_SECRET loaded:      ", !!process.env.JWT_SECRET);
+  console.log("SUPABASE_URL loaded:    ", !!process.env.SUPABASE_URL);
+  console.log("SUPABASE_KEY loaded:    ", !!process.env.SUPABASE_KEY);
+  console.log("PESAPAL_KEY loaded:     ", !!process.env.PESAPAL_CONSUMER_KEY);
+  console.log("PESAPAL_SECRET loaded:  ", !!process.env.PESAPAL_CONSUMER_SECRET);
+  console.log("PESAPAL_IPN_ID loaded:  ", !!process.env.PESAPAL_IPN_ID);
+  console.log("CALLBACK_URL loaded:    ", !!process.env.PESAPAL_CALLBACK_URL);
+  console.log("──────────────────────────────────────");
 });
