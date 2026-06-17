@@ -1,3 +1,4 @@
+// routes/withdrawals.js
 import dotenv from "dotenv";
 dotenv.config();
 
@@ -11,8 +12,8 @@ const router = express.Router();
 //   POST /api/withdrawals/request
 //   GET  /api/withdrawals/:email
 
-const MIN_WITHDRAWAL  = 300;  // KES — updated from 500
-const WITHDRAWAL_FEE  = 40;   // KES platform fee per withdrawal
+const MIN_WITHDRAWAL = 300;
+const WITHDRAWAL_FEE = 40;
 
 // ─── REQUEST WITHDRAWAL ──────────────────────────────────────────────────────
 router.post("/request", async (req, res) => {
@@ -37,7 +38,6 @@ router.post("/request", async (req, res) => {
       });
     }
 
-    // Fetch wallet
     const { data: wallet, error: walletError } = await supabase
       .from("wallets")
       .select("balance, pending_earnings")
@@ -48,18 +48,21 @@ router.post("/request", async (req, res) => {
       return res.status(500).json({ message: walletError.message });
     }
 
-    if (!wallet || wallet.balance < numAmount) {
+    const currentBalance = Number(wallet?.balance) || 0;
+
+    if (!wallet || currentBalance < numAmount) {
       return res.status(400).json({
-        message: `Insufficient balance. Available: KES ${wallet?.balance || 0}`,
+        message: `Insufficient balance. Available: KES ${currentBalance}`,
       });
     }
 
-    // Deduct balance immediately and move to pending
+    const currentPending = Number(wallet?.pending_earnings) || 0;
+
     const { error: updateError } = await supabase
       .from("wallets")
       .update({
-        balance:          wallet.balance - numAmount,
-        pending_earnings: (wallet.pending_earnings || 0) + numAmount,
+        balance:          currentBalance - numAmount,
+        pending_earnings: currentPending + numAmount,
         updated_at:       new Date().toISOString(),
       })
       .eq("user_email", user_email);
@@ -68,7 +71,6 @@ router.post("/request", async (req, res) => {
       return res.status(500).json({ message: updateError.message });
     }
 
-    // Create withdrawal record (net after fee deducted on payout by admin)
     const { data, error } = await supabase
       .from("withdrawals")
       .insert([{
@@ -84,10 +86,17 @@ router.post("/request", async (req, res) => {
       .single();
 
     if (error) {
+      await supabase
+        .from("wallets")
+        .update({
+          balance:          currentBalance,
+          pending_earnings: currentPending,
+        })
+        .eq("user_email", user_email);
       return res.status(400).json({ message: error.message });
     }
 
-    console.log(`✅ Withdrawal requested: KES ${numAmount} (net KES ${numAmount - WITHDRAWAL_FEE}) for ${user_email}`);
+    console.log(`✅ Withdrawal requested: KES ${numAmount} for ${user_email}`);
     return res.status(200).json({
       message:    "Withdrawal request submitted successfully",
       withdrawal: data,
@@ -102,7 +111,9 @@ router.post("/request", async (req, res) => {
 // ─── GET USER WITHDRAWALS ────────────────────────────────────────────────────
 router.get("/:email", async (req, res) => {
   try {
-    const email = decodeURIComponent(req.params.email).toLowerCase().trim();
+    const email = decodeURIComponent(req.params.email)
+      .toLowerCase()
+      .trim();
 
     const { data, error } = await supabase
       .from("withdrawals")

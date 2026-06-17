@@ -1,4 +1,5 @@
-﻿import dotenv from "dotenv";
+﻿// routes/admin.js
+import dotenv from "dotenv";
 dotenv.config();
 
 import express from "express";
@@ -7,15 +8,6 @@ import supabase from "../supabase.js";
 const router = express.Router();
 
 // Mounted at: app.use("/api/admin", adminRoutes)
-// Final URLs:
-//   GET  /api/admin/stats
-//   GET  /api/admin/users
-//   GET  /api/admin/withdrawals
-//   POST /api/admin/withdrawals/approve
-//   POST /api/admin/withdrawals/reject
-//   GET  /api/admin/payments
-//   POST /api/admin/tasks/add
-//   POST /api/admin/tasks/deactivate
 
 // ─── STATS ───────────────────────────────────────────────────────────────────
 router.get("/stats", async (req, res) => {
@@ -44,14 +36,14 @@ router.get("/stats", async (req, res) => {
       .select("amount")
       .eq("status", "Completed");
 
-    const totalRevenue = payments?.reduce((sum, p) => sum + (p.amount || 0), 0) || 0;
+    const totalRevenue = (payments || []).reduce((sum, p) => sum + (Number(p.amount) || 0), 0);
 
     return res.status(200).json({
-      total_users:          totalUsers          || 0,
-      paid_users:           paidUsers           || 0,
-      completed_tasks:      completedTasks      || 0,
-      pending_withdrawals:  pendingWithdrawals  || 0,
-      total_revenue:        totalRevenue,
+      total_users:         totalUsers         || 0,
+      paid_users:          paidUsers          || 0,
+      completed_tasks:     completedTasks     || 0,
+      pending_withdrawals: pendingWithdrawals || 0,
+      total_revenue:       totalRevenue,
     });
   } catch (error) {
     console.error("❌ Get stats error:", error.message);
@@ -64,7 +56,7 @@ router.get("/users", async (req, res) => {
   try {
     const { data, error } = await supabase
       .from("users")
-      .select("id, full_name, email, membership_paid, referral_code, created_at")
+      .select("id, full_name, email, membership_paid, referral_code, is_admin, created_at")
       .order("created_at", { ascending: false });
 
     if (error) return res.status(400).json({ message: error.message });
@@ -119,7 +111,6 @@ router.post("/withdrawals/approve", async (req, res) => {
       .update({ status: "approved", updated_at: new Date().toISOString() })
       .eq("id", withdrawal_id);
 
-    // Remove from pending_earnings (funds were already deducted from balance on request)
     const { data: wallet } = await supabase
       .from("wallets")
       .select("pending_earnings")
@@ -127,10 +118,13 @@ router.post("/withdrawals/approve", async (req, res) => {
       .maybeSingle();
 
     if (wallet) {
+      const currentPending = Number(wallet.pending_earnings) || 0;
+      const newPending     = Math.max(0, currentPending - Number(withdrawal.amount || 0));
+
       await supabase
         .from("wallets")
         .update({
-          pending_earnings: Math.max(0, wallet.pending_earnings - withdrawal.amount),
+          pending_earnings: newPending,
           updated_at:       new Date().toISOString(),
         })
         .eq("user_email", withdrawal.user_email);
@@ -172,7 +166,6 @@ router.post("/withdrawals/reject", async (req, res) => {
       .update({ status: "rejected", updated_at: new Date().toISOString() })
       .eq("id", withdrawal_id);
 
-    // Refund the full amount back to user balance
     const { data: wallet } = await supabase
       .from("wallets")
       .select("balance, pending_earnings")
@@ -180,11 +173,15 @@ router.post("/withdrawals/reject", async (req, res) => {
       .maybeSingle();
 
     if (wallet) {
+      const currentBalance = Number(wallet.balance)          || 0;
+      const currentPending = Number(wallet.pending_earnings) || 0;
+      const refundAmount   = Number(withdrawal.amount)       || 0;
+
       await supabase
         .from("wallets")
         .update({
-          balance:          wallet.balance + withdrawal.amount,
-          pending_earnings: Math.max(0, wallet.pending_earnings - withdrawal.amount),
+          balance:          currentBalance + refundAmount,
+          pending_earnings: Math.max(0, currentPending - refundAmount),
           updated_at:       new Date().toISOString(),
         })
         .eq("user_email", withdrawal.user_email);

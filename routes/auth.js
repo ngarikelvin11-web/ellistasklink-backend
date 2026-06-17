@@ -1,3 +1,4 @@
+// routes/auth.js
 import express from "express";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
@@ -5,18 +6,18 @@ import supabase from "../supabase.js";
 
 const router = express.Router();
 
-// Mounted at: app.use("/api/auth", authRoutes)
-// Final URLs:
-//   POST /api/auth/register
-//   POST /api/auth/login
-//   GET  /api/auth/me
+// Generate unique referral code
+function generateReferralCode(fullName) {
+  const clean = (fullName || "USER").replace(/[^A-Z0-9]/gi, "").toUpperCase().slice(0, 6);
+  const random = Math.floor(1000 + Math.random() * 9000);
+  return `${clean}${random}`;
+}
 
-// ─── REGISTER ─────────────────────────────────────────────────────────────────
+// ─── REGISTER ────────────────────────────────────────────────────────────────
 router.post("/register", async (req, res) => {
   try {
-    const { fullName, email, password, referredBy } = req.body;
+    const { fullName, email, password, phone, country, referredBy } = req.body;
 
-    // ── Validation ────────────────────────────────────────────────────────────
     if (!fullName || !email || !password) {
       return res.status(400).json({ message: "fullName, email, and password are required" });
     }
@@ -27,7 +28,7 @@ router.post("/register", async (req, res) => {
 
     const cleanEmail = email.toLowerCase().trim();
 
-    // ── Check for existing account ────────────────────────────────────────────
+    // Check existing
     const { data: existingUser } = await supabase
       .from("users")
       .select("id")
@@ -38,26 +39,40 @@ router.post("/register", async (req, res) => {
       return res.status(409).json({ message: "An account with this email already exists" });
     }
 
-    // ── Hash password + generate referral code ────────────────────────────────
     const hashedPassword = await bcrypt.hash(password, 10);
 
-    const referralCode =
-      fullName.replace(/\s+/g, "").toUpperCase().slice(0, 8) +
-      Math.floor(1000 + Math.random() * 9000);
+    // Generate UNIQUE referral code
+    let referralCode = generateReferralCode(fullName);
+    let attempts = 0;
+    while (attempts < 5) {
+      const { data: codeExists } = await supabase
+        .from("users")
+        .select("id")
+        .eq("referral_code", referralCode)
+        .maybeSingle();
 
-    // ── Insert user ───────────────────────────────────────────────────────────
+      if (!codeExists) break;
+      referralCode = generateReferralCode(fullName);
+      attempts++;
+    }
+
+    // Insert user
     const { data: newUser, error: insertError } = await supabase
       .from("users")
       .insert([{
-        full_name:       fullName.trim(),
-        email:           cleanEmail,
-        password:        hashedPassword,
-        referral_code:   referralCode,
-        referred_by:     referredBy || null,
-        membership_paid: false,
-        balance:         0,
+        full_name:        fullName.trim(),
+        email:            cleanEmail,
+        password:         hashedPassword,
+        phone:            phone || null,
+        country:          country || "KE",
+        referral_code:    referralCode,
+        referred_by:      referredBy || null,
+        membership_paid:  false,
+        task_access_paid: false,
+        is_admin:         false,
+        balance:          0,
       }])
-      .select("id, email, full_name, referral_code")
+      .select("id, email, full_name, referral_code, phone, country")
       .single();
 
     if (insertError) {
@@ -65,38 +80,61 @@ router.post("/register", async (req, res) => {
       return res.status(500).json({ message: insertError.message });
     }
 
-    // ── Create wallet row for new user ────────────────────────────────────────
+    // Create wallet (all zeros)
     await supabase.from("wallets").insert([{
-      user_email:         cleanEmail,
-      balance:            0,
-      total_earnings:     0,
-      pending_earnings:   0,
-      completed_earnings: 0,
+      user_email:          cleanEmail,
+      balance:             0,
+      total_earnings:      0,
+      pending_earnings:    0,
+      completed_earnings:  0,
+      platform_balance:    0,
+      referral_earned:     0,
+      total_withdrawn:     0,
+      membership_paid:     false,
+      task_access_paid:    false,
     }]);
 
-    // ── Record referral if a valid referral code was provided ─────────────────
+    // Track referral (if applicable)
     if (referredBy) {
       const { data: referrer } = await supabase
         .from("users")
-        .select("id, email")
+        .select("email")
         .eq("referral_code", referredBy)
         .maybeSingle();
 
       if (referrer) {
         await supabase.from("referrals").insert([{
-          referrer_email: referrer.email,
-          referred_email: cleanEmail,
-          status:         "pending",
-          bonus_amount:   120,
+          referrer_email:  referrer.email,
+          referred_email:  cleanEmail,
+          status:          "pending",  // becomes "completed" after payment
+          bonus_amount:    100,
+          referrer_earns:  70,
+          platform_keeps:  30,
         }]);
         console.log(`✅ Referral recorded: ${referrer.email} → ${cleanEmail}`);
       }
     }
 
-    console.log(`✅ New user registered: ${cleanEmail}`);
+    // Sign JWT
+    const secret = process.env.JWT_SECRET;
+    if (!secret) {
+      return res.status(500).json({ message: "Server configuration error" });
+    }
+
+    const token = jwt.sign(
+      { id: newUser.id, email: newUser.email },
+      secret,
+      { expiresIn: "30d" }
+    );
+
+    console.log(`✅ New user registered: ${cleanEmail} (code: ${referralCode})`);
+
     return res.status(201).json({
       message:       "Account created successfully",
-      referral_code: newUser.referral_code,
+      token,
+      user:          newUser,
+      referral_code: referralCode,
+      referral_link: `https://ellis-ai-hub.lovable.app/register?ref=${referralCode}`,
     });
   } catch (error) {
     console.error("❌ Register error:", error.message);
@@ -104,7 +142,7 @@ router.post("/register", async (req, res) => {
   }
 });
 
-// ─── LOGIN ────────────────────────────────────────────────────────────────────
+// ─── LOGIN ───────────────────────────────────────────────────────────────────
 router.post("/login", async (req, res) => {
   try {
     const { email, password } = req.body;
@@ -115,47 +153,34 @@ router.post("/login", async (req, res) => {
 
     const cleanEmail = email.toLowerCase().trim();
 
-    // ── Find user ─────────────────────────────────────────────────────────────
     const { data: user, error: fetchError } = await supabase
       .from("users")
       .select("*")
       .eq("email", cleanEmail)
       .maybeSingle();
 
-    if (fetchError) {
-      console.error("❌ Login fetch error:", fetchError.message);
-      return res.status(500).json({ message: "Login failed. Please try again." });
-    }
-
-    if (!user) {
+    if (fetchError || !user) {
       return res.status(404).json({ message: "No account found with this email" });
     }
 
-    // ── Verify password ───────────────────────────────────────────────────────
     const validPassword = await bcrypt.compare(password, user.password);
-
     if (!validPassword) {
       return res.status(401).json({ message: "Incorrect password" });
     }
 
-    // ── Sign JWT ──────────────────────────────────────────────────────────────
     const secret = process.env.JWT_SECRET;
-
     if (!secret) {
-      console.error("CRITICAL: JWT_SECRET is not set");
       return res.status(500).json({ message: "Server configuration error" });
     }
 
     const token = jwt.sign(
       { id: user.id, email: user.email },
       secret,
-      { expiresIn: "7d" }
+      { expiresIn: "30d" }
     );
 
-    // ── Return safe user (no password) ────────────────────────────────────────
-    const { password: _removed, ...safeUser } = user;
+    const { password: _, ...safeUser } = user;
 
-    console.log(`✅ Login successful: ${cleanEmail}`);
     return res.status(200).json({
       message: "Login successful",
       token,
@@ -167,40 +192,23 @@ router.post("/login", async (req, res) => {
   }
 });
 
-// ─── GET CURRENT USER (token check) ──────────────────────────────────────────
+// ─── ME ──────────────────────────────────────────────────────────────────────
 router.get("/me", async (req, res) => {
   try {
     const authHeader = req.headers["authorization"];
-
-    if (!authHeader || !authHeader.startsWith("Bearer ")) {
-      return res.status(401).json({ message: "Authorization header missing or malformed" });
+    if (!authHeader?.startsWith("Bearer ")) {
+      return res.status(401).json({ message: "Missing token" });
     }
 
     const token = authHeader.split(" ")[1];
-
-    if (!token || token === "undefined" || token === "null") {
-      return res.status(401).json({ message: "Access token missing or invalid" });
-    }
-
     const secret = process.env.JWT_SECRET;
+    if (!secret) return res.status(500).json({ message: "Server config error" });
 
-    if (!secret) {
-      return res.status(500).json({ message: "Server configuration error" });
-    }
-
-    let decoded;
-    try {
-      decoded = jwt.verify(token, secret);
-    } catch (err) {
-      if (err.name === "TokenExpiredError") {
-        return res.status(403).json({ message: "Token has expired. Please log in again." });
-      }
-      return res.status(403).json({ message: "Invalid token. Please log in again." });
-    }
+    const decoded = jwt.verify(token, secret);
 
     const { data: user, error } = await supabase
       .from("users")
-      .select("id, full_name, email, referral_code, membership_paid, balance, created_at")
+      .select("id, full_name, email, phone, country, referral_code, referred_by, membership_paid, task_access_paid, is_admin, created_at")
       .eq("id", decoded.id)
       .maybeSingle();
 
@@ -210,8 +218,7 @@ router.get("/me", async (req, res) => {
 
     return res.status(200).json(user);
   } catch (error) {
-    console.error("❌ /me error:", error.message);
-    return res.status(403).json({ message: "Invalid or expired token" });
+    return res.status(403).json({ message: "Invalid token" });
   }
 });
 

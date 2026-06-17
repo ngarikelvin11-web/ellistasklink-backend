@@ -1,4 +1,5 @@
-﻿import dotenv from "dotenv";
+﻿// routes/wallets.js
+import dotenv from "dotenv";
 dotenv.config();
 
 import express from "express";
@@ -6,34 +7,30 @@ import supabase from "../supabase.js";
 
 const router = express.Router();
 
-// Mounted at: app.use("/api/user", walletRoutes)
-// Final URL:  GET /api/user/wallet/:email
-
 router.get("/wallet/:email", async (req, res) => {
   try {
     const email = decodeURIComponent(req.params.email).toLowerCase().trim();
 
-    const { data, error } = await supabase
+    const { data: wallet } = await supabase
       .from("wallets")
       .select("*")
       .eq("user_email", email)
       .maybeSingle();
 
-    if (error) {
-      return res.status(500).json({ message: error.message });
-    }
-
-    return res.status(200).json(
-      data ?? {
-        user_email:         email,
-        balance:            0,
-        total_earnings:     0,
-        pending_earnings:   0,
-        completed_earnings: 0,
-      }
-    );
+    return res.status(200).json({
+      user_email:          email,
+      balance:             Number(wallet?.balance)             || 0,
+      pending_earnings:    Number(wallet?.pending_earnings)    || 0,
+      completed_earnings:  Number(wallet?.completed_earnings)  || 0,
+      platform_balance:    Number(wallet?.platform_balance)    || 0,
+      referral_earned:     Number(wallet?.referral_earned)     || 0,
+      total_earnings:      Number(wallet?.total_earnings)      || 0,
+      total_withdrawn:     Number(wallet?.total_withdrawn)     || 0,
+      membership_paid:     wallet?.membership_paid              || false,
+      task_access_paid:    wallet?.task_access_paid             || false,
+      currency:            "KES",
+    });
   } catch (error) {
-    console.error("❌ Get wallet error:", error.message);
     return res.status(500).json({ message: "Failed to fetch wallet" });
   }
 });

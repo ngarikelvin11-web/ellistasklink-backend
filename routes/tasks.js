@@ -1,4 +1,5 @@
-﻿import dotenv from "dotenv";
+﻿// routes/tasks.js
+import dotenv from "dotenv";
 dotenv.config();
 
 import express from "express";
@@ -23,7 +24,6 @@ router.get("/", async (req, res) => {
       .order("created_at", { ascending: false });
 
     if (error) {
-      console.error("❌ Fetch tasks error:", error.message);
       return res.status(400).json({ message: error.message });
     }
 
@@ -37,7 +37,7 @@ router.get("/", async (req, res) => {
 // ─── GET USER TASKS ───────────────────────────────────────────────────────────
 router.get("/user/:email", async (req, res) => {
   try {
-    const email = decodeURIComponent(req.params.email).toLowerCase().trim();
+    const email = req.params.email.toLowerCase().trim();
 
     const { data, error } = await supabase
       .from("user_tasks")
@@ -46,7 +46,6 @@ router.get("/user/:email", async (req, res) => {
       .order("started_at", { ascending: false });
 
     if (error) {
-      console.error("❌ Fetch user tasks error:", error.message);
       return res.status(400).json({ message: error.message });
     }
 
@@ -68,7 +67,6 @@ router.post("/start", async (req, res) => {
 
     const cleanEmail = user_email.toLowerCase().trim();
 
-    // ── Check membership before allowing task start ────────────────────────
     const { data: user } = await supabase
       .from("users")
       .select("membership_paid")
@@ -87,7 +85,6 @@ router.post("/start", async (req, res) => {
       });
     }
 
-    // ── Check task exists and is active ───────────────────────────────────
     const { data: task } = await supabase
       .from("tasks")
       .select("id, status")
@@ -102,7 +99,6 @@ router.post("/start", async (req, res) => {
       return res.status(400).json({ message: "This task is no longer available" });
     }
 
-    // ── Guard: already started ─────────────────────────────────────────────
     const { data: existing } = await supabase
       .from("user_tasks")
       .select("*")
@@ -117,7 +113,6 @@ router.post("/start", async (req, res) => {
       });
     }
 
-    // ── Insert user_task row ───────────────────────────────────────────────
     const { data, error } = await supabase
       .from("user_tasks")
       .insert([{ user_email: cleanEmail, task_id, status: "started" }])
@@ -125,7 +120,6 @@ router.post("/start", async (req, res) => {
       .single();
 
     if (error) {
-      console.error("❌ Insert user_task error:", error.message);
       return res.status(400).json({ message: error.message });
     }
 
@@ -148,7 +142,6 @@ router.post("/complete", async (req, res) => {
 
     const cleanEmail = user_email.toLowerCase().trim();
 
-    // ── Fetch task reward ──────────────────────────────────────────────────
     const { data: task, error: taskError } = await supabase
       .from("tasks")
       .select("id, reward, status")
@@ -159,7 +152,6 @@ router.post("/complete", async (req, res) => {
       return res.status(404).json({ message: "Task not found" });
     }
 
-    // ── Fetch user_task row ────────────────────────────────────────────────
     const { data: userTask } = await supabase
       .from("user_tasks")
       .select("*")
@@ -175,7 +167,6 @@ router.post("/complete", async (req, res) => {
       return res.status(400).json({ message: "Task already completed" });
     }
 
-    // ── Mark task as completed ─────────────────────────────────────────────
     const { error: updateError } = await supabase
       .from("user_tasks")
       .update({ status: "completed", completed_at: new Date().toISOString() })
@@ -183,42 +174,41 @@ router.post("/complete", async (req, res) => {
       .eq("task_id", task_id);
 
     if (updateError) {
-      console.error("❌ Update user_task error:", updateError.message);
       return res.status(500).json({ message: "Failed to mark task as completed" });
     }
 
-    // ── Credit wallet ──────────────────────────────────────────────────────
     const { data: wallet } = await supabase
       .from("wallets")
       .select("balance, total_earnings, completed_earnings")
       .eq("user_email", cleanEmail)
       .maybeSingle();
 
+    const reward = Number(task.reward) || 0;
+
     if (wallet) {
       await supabase
         .from("wallets")
         .update({
-          balance:            wallet.balance            + task.reward,
-          total_earnings:     wallet.total_earnings     + task.reward,
-          completed_earnings: wallet.completed_earnings + task.reward,
+          balance:            (Number(wallet.balance)            || 0) + reward,
+          total_earnings:     (Number(wallet.total_earnings)     || 0) + reward,
+          completed_earnings: (Number(wallet.completed_earnings) || 0) + reward,
           updated_at:         new Date().toISOString(),
         })
         .eq("user_email", cleanEmail);
     } else {
-      // Wallet should already exist (created on register), but insert as fallback
       await supabase.from("wallets").insert([{
         user_email:         cleanEmail,
-        balance:            task.reward,
-        total_earnings:     task.reward,
+        balance:            reward,
+        total_earnings:     reward,
         pending_earnings:   0,
-        completed_earnings: task.reward,
+        completed_earnings: reward,
       }]);
     }
 
-    console.log(`✅ Task completed: ${cleanEmail} — KES ${task.reward} credited`);
+    console.log(`✅ Task completed: ${cleanEmail} — KES ${reward} credited`);
     return res.status(200).json({
       message: "Task completed successfully",
-      reward:  task.reward,
+      reward:  reward,
     });
   } catch (error) {
     console.error("❌ Complete task error:", error.message);

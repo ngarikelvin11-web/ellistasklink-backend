@@ -1,3 +1,4 @@
+// middleware/auth.js
 import jwt from "jsonwebtoken";
 import supabase from "../supabase.js";
 
@@ -39,7 +40,6 @@ export function authenticateToken(req, res, next) {
       return res.status(403).json({ message: "Token verification failed" });
     }
 
-    // decoded contains: { id, email, iat, exp }
     req.user = decoded;
     next();
   });
