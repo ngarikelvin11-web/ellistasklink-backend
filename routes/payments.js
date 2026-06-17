@@ -41,18 +41,89 @@ async function getPesapalToken() {
   return token;
 }
 
-// Normalize phone to international format required by Pesapal
-function normalizePhone(phone, country) {
-  let p = String(phone || "").replace(/[^0-9]/g, "");
-  const cc = COUNTRY_CODE_MAP[country] || "254";
+// ─── DEBUG ROUTE — shows current env vars + tests Pesapal connection ───────
+router.get("/debug", async (req, res) => {
+  try {
+    const requestBody = {
+      consumer_key:    process.env.PESAPAL_CONSUMER_KEY,
+      consumer_secret: process.env.PESAPAL_CONSUMER_SECRET,
+    };
 
-  if (p.startsWith("0")) p = cc + p.substring(1);
-  else if (p.startsWith(cc)) p = p;
-  else if (p.length === 9) p = cc + p;
-  else if (p.startsWith("+" + cc)) p = p.substring(1);
+    let rawResponse  = null;
+    let httpStatus   = null;
+    let requestError = null;
 
-  return p;
-}
+    try {
+      const response = await axios.post(
+        `${PESAPAL_BASE_URL}/Auth/RequestToken`,
+        requestBody,
+        { headers: { "Content-Type": "application/json" }, timeout: 15000 }
+      );
+      rawResponse = response.data;
+      httpStatus  = response.status;
+    } catch (err) {
+      httpStatus   = err.response?.status;
+      rawResponse  = err.response?.data;
+      requestError = err.message;
+    }
+
+    return res.status(200).json({
+      debug: true,
+      env: process.env.PESAPAL_ENV || "sandbox (default)",
+      base_url: PESAPAL_BASE_URL,
+      key_loaded: !!process.env.PESAPAL_CONSUMER_KEY,
+      key_value: process.env.PESAPAL_CONSUMER_KEY ? `${process.env.PESAPAL_CONSUMER_KEY.substring(0, 10)}...` : "NOT SET",
+      secret_loaded: !!process.env.PESAPAL_CONSUMER_SECRET,
+      secret_value: process.env.PESAPAL_CONSUMER_SECRET ? "***loaded***" : "NOT SET",
+      ipn_id_loaded: !!process.env.PESAPAL_IPN_ID,
+      ipn_id_value: process.env.PESAPAL_IPN_ID || "NOT SET",
+      callback_url: process.env.PESAPAL_CALLBACK_URL || "NOT SET",
+      pesapal_http_status: httpStatus,
+      pesapal_raw_response: rawResponse,
+      request_error: requestError,
+    });
+  } catch (e) {
+    return res.status(500).json({ debug: true, error: e.message });
+  }
+});
+
+// ─── REGISTER IPN ────────────────────────────────────────────────────────────
+router.get("/register-ipn", async (req, res) => {
+  try {
+    const callbackUrl = process.env.PESAPAL_CALLBACK_URL;
+    if (!callbackUrl) {
+      return res.status(500).json({ message: "PESAPAL_CALLBACK_URL is not set in .env" });
+    }
+
+    const token = await getPesapalToken();
+
+    console.log("📡 Registering IPN with URL:", callbackUrl);
+
+    const response = await axios.post(
+      `${PESAPAL_BASE_URL}/URLSetup/RegisterIPN`,
+      { url: callbackUrl, ipn_notification_type: "GET" },
+      {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+          Accept:        "application/json",
+        },
+      }
+    );
+
+    console.log("✅ IPN registered:", JSON.stringify(response.data, null, 2));
+    return res.status(200).json(response.data);
+  } catch (error) {
+    console.error("❌ IPN registration error:");
+    console.error("   Status :", error.response?.status);
+    console.error("   Data   :", JSON.stringify(error.response?.data, null, 2));
+    console.error("   Message:", error.message);
+    return res.status(500).json({
+      message: "IPN registration failed",
+      detail:  error.response?.data || error.message,
+    });
+  }
+});
 
 // ─── CREATE PAYMENT (with phone for STK push) ────────────────────────────────
 router.post("/create", async (req, res) => {
@@ -73,14 +144,13 @@ router.post("/create", async (req, res) => {
     if (!phone) {
       return res.status(400).json({ message: "phone is required for M-Pesa STK push" });
     }
-
     if (!process.env.PESAPAL_IPN_ID) {
-      return res.status(500).json({ message: "PESAPAL_IPN_ID not set" });
+      return res.status(500).json({ message: "PESAPAL_IPN_ID not set in .env" });
     }
 
     const callbackUrl = process.env.PESAPAL_CALLBACK_URL;
     if (!callbackUrl) {
-      return res.status(500).json({ message: "PESAPAL_CALLBACK_URL not set" });
+      return res.status(500).json({ message: "PESAPAL_CALLBACK_URL not set in .env" });
     }
 
     const token   = await getPesapalToken();
@@ -90,7 +160,13 @@ router.post("/create", async (req, res) => {
     const firstName = nameParts[0];
     const lastName  = nameParts.slice(1).join(" ") || firstName;
 
-    const phoneNumber = normalizePhone(phone, country);
+    // Normalize phone to international format
+    let phoneNumber = String(phone || "").replace(/[^0-9]/g, "");
+    const cc = COUNTRY_CODE_MAP[country] || "254";
+
+    if (phoneNumber.startsWith("0")) phoneNumber = cc + phoneNumber.substring(1);
+    else if (phoneNumber.startsWith("+" + cc)) phoneNumber = phoneNumber.substring(1);
+    else if (!phoneNumber.startsWith(cc) && phoneNumber.length === 9) phoneNumber = cc + phoneNumber;
 
     const payload = {
       id: orderId,
@@ -143,13 +219,12 @@ router.post("/create", async (req, res) => {
       console.warn("⚠️ Could not save payment intent:", dbErr.message);
     }
 
-    // ✅ Return the iframe URL — frontend opens this in same window
     return res.status(200).json({
-      order_tracking_id: response.data.order_tracking_id,
+      order_tracking_id:  response.data.order_tracking_id,
       merchant_reference: response.data.merchant_reference || orderId,
-      redirect_url:      response.data.redirect_url,
-      iframe_url:        response.data.redirect_url,         // alias
-      status:            response.data.status || "200",
+      redirect_url:       response.data.redirect_url,
+      iframe_url:         response.data.redirect_url,
+      status:             response.data.status || "200",
     });
   } catch (error) {
     console.error("❌ Create payment error:");
@@ -179,7 +254,8 @@ router.get("/callback", async (req, res) => {
     const paymentData = response.data;
     console.log(`📩 Callback: ${paymentData.payment_status_description}`);
 
-    if (paymentData.payment_status_description !== "Completed") {
+    const status = String(paymentData.payment_status_description || "").toUpperCase();
+    if (status !== "COMPLETED") {
       return res.status(200).json({ message: "Payment not completed yet" });
     }
 
@@ -200,17 +276,10 @@ router.get("/callback", async (req, res) => {
       .update({ status: "Completed" })
       .eq("pesapal_tracking_id", orderTrackingId);
 
-    // MEMBERSHIP (100 KES) — referrer gets 70, platform keeps 30
+    // ── MEMBERSHIP (100 KES) — referrer gets 70, platform keeps 30 ────────
     if (paymentType === "membership") {
-      await supabase
-        .from("users")
-        .update({ membership_paid: true })
-        .eq("email", userEmail);
-
-      await supabase
-        .from("wallets")
-        .update({ membership_paid: true })
-        .eq("user_email", userEmail);
+      await supabase.from("users").update({ membership_paid: true }).eq("email", userEmail);
+      await supabase.from("wallets").update({ membership_paid: true }).eq("user_email", userEmail);
 
       const { data: referral } = await supabase
         .from("referrals")
@@ -229,82 +298,51 @@ router.get("/callback", async (req, res) => {
           .eq("referred_email", userEmail);
 
         const { data: refW } = await supabase
-          .from("wallets")
-          .select("*")
-          .eq("user_email", referral.referrer_email)
-          .maybeSingle();
+          .from("wallets").select("*").eq("user_email", referral.referrer_email).maybeSingle();
 
         if (refW) {
-          await supabase
-            .from("wallets")
-            .update({
-              balance:            (Number(refW.balance) || 0) + referrerEarns,
-              referral_earned:    (Number(refW.referral_earned) || 0) + referrerEarns,
-              total_earnings:     (Number(refW.total_earnings) || 0) + referrerEarns,
-              completed_earnings: (Number(refW.completed_earnings) || 0) + referrerEarns,
-            })
-            .eq("user_email", referral.referrer_email);
+          await supabase.from("wallets").update({
+            balance:            (Number(refW.balance) || 0) + referrerEarns,
+            referral_earned:    (Number(refW.referral_earned) || 0) + referrerEarns,
+            total_earnings:     (Number(refW.total_earnings) || 0) + referrerEarns,
+            completed_earnings: (Number(refW.completed_earnings) || 0) + referrerEarns,
+          }).eq("user_email", referral.referrer_email);
         }
 
         const { data: newW } = await supabase
-          .from("wallets")
-          .select("*")
-          .eq("user_email", userEmail)
-          .maybeSingle();
+          .from("wallets").select("*").eq("user_email", userEmail).maybeSingle();
 
         if (newW) {
-          await supabase
-            .from("wallets")
-            .update({
-              platform_balance: (Number(newW.platform_balance) || 0) + platformKeeps,
-            })
-            .eq("user_email", userEmail);
+          await supabase.from("wallets").update({
+            platform_balance: (Number(newW.platform_balance) || 0) + platformKeeps,
+          }).eq("user_email", userEmail);
         }
         console.log(`✅ Referral paid: ${referral.referrer_email} +${referrerEarns}, platform +${platformKeeps}`);
       } else {
         const { data: w } = await supabase
-          .from("wallets")
-          .select("*")
-          .eq("user_email", userEmail)
-          .maybeSingle();
+          .from("wallets").select("*").eq("user_email", userEmail).maybeSingle();
 
         if (w) {
-          await supabase
-            .from("wallets")
-            .update({
-              platform_balance: (Number(w.platform_balance) || 0) + amount,
-            })
-            .eq("user_email", userEmail);
+          await supabase.from("wallets").update({
+            platform_balance: (Number(w.platform_balance) || 0) + amount,
+          }).eq("user_email", userEmail);
         }
         console.log(`✅ Direct signup: platform +${amount}`);
       }
     }
 
-    // TASK ACCESS (100 KES) — all to platform
+    // ── TASK ACCESS (100 KES) — all to platform ───────────────────────────
     if (paymentType === "task_access") {
-      await supabase
-        .from("users")
-        .update({ task_access_paid: true })
-        .eq("email", userEmail);
-
-      await supabase
-        .from("wallets")
-        .update({ task_access_paid: true })
-        .eq("user_email", userEmail);
+      await supabase.from("users").update({ task_access_paid: true }).eq("email", userEmail);
+      await supabase.from("wallets").update({ task_access_paid: true }).eq("user_email", userEmail);
 
       const { data: w } = await supabase
-        .from("wallets")
-        .select("*")
-        .eq("user_email", userEmail)
-        .maybeSingle();
+        .from("wallets").select("*").eq("user_email", userEmail).maybeSingle();
 
       if (w) {
-        await supabase
-          .from("wallets")
-          .update({
-            platform_balance: (Number(w.platform_balance) || 0) + amount,
-          })
-          .eq("user_email", userEmail);
+        await supabase.from("wallets").update({
+          platform_balance: (Number(w.platform_balance) || 0) + amount,
+        }).eq("user_email", userEmail);
       }
       console.log(`✅ Task access unlocked: ${userEmail}, platform +${amount}`);
     }
